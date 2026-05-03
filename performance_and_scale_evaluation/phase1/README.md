@@ -1,4 +1,4 @@
-# MaaS AI Gateway — Phase 1 Performance Evaluation
+# MaaS AI Gateway - Phase 1 Performance Evaluation
 
 Baseline performance and overhead benchmarks for the MaaS AI Gateway
 (BBR payload-processing sidecar). Measures the latency and throughput cost
@@ -60,27 +60,14 @@ phase1/
   1. RHCL/Kuadrant operator (`manifests/infrastructure/rhcl-kuadrant.yaml`)
   2. PostgreSQL (`manifests/infrastructure/postgres.yaml`)
   3. BBR payload-processing sidecar deployed via Helm
-## Quick Start
 
-```bash
-# 1. Create the guidellm-token secret (any dummy value works with the simulator)
-oc create secret generic guidellm-token \
-  --from-literal=token=dummy-key -n openshift-ingress
-
-# 2. Run the full benchmark
-./run_benchmark.sh
-```
-After the job completes:
-```bash
-./run_benchmark.sh --extract-only
-```
 
 ## Simulator
 
 `llm-d-inference-sim` is a multi-provider LLM simulator that responds to
-OpenAI, Anthropic, Azure, Bedrock, and Vertex AI API formats.
+OpenAI, Anthropic, Azure, Bedrock, and Vertex AI API formats. this version ( https://github.com/arielharush96/llm-d-inference-sim/tree/feat/multi-provider-support ) is a fork which allows the simulator to handle requests (from the ai gateway) for all 5 different providors.
 
-Key flags:
+Modified simulator key flags:
 - `--deterministic-tokens` — every response returns exactly `max_tokens`
   output tokens, ensuring consistent A/B latency comparisons
 - `--time-to-first-token 1` / `--inter-token-latency 1` — 1ms simulated
@@ -88,7 +75,7 @@ Key flags:
 - `--providers anthropic,azure,bedrock,vertexai` — enables non-OpenAI
   endpoint handlers
 
-## BBR Plugin Chain
+## Plugin Chain
 
 The payload-processing (BBR) sidecar runs these plugins in order:
 
@@ -125,14 +112,6 @@ The payload-processing (BBR) sidecar runs these plugins in order:
 - `gpt-4o-azure` (Azure OpenAI)
 - `gpt-4o-bedrock` (Bedrock OpenAI)
   
-### Benchmark parameters
-
-| Parameter        | Value  |
-|------------------|--------|
-| Duration         | 180s per benchmark |
-| Hard timeout     | 300s   |
-| Streaming        | disabled |
-| GuideLLM version | v0.6.0 |
 
 ## Monitoring
 
@@ -140,6 +119,5 @@ The benchmark pod runs a background Prometheus monitor that collects every 5 sec
 - **CPU** usage per pod (payload-processing, gateway, simulator)
 - **Memory** working set per pod
 - **Network** receive/transmit bytes per pod
-
-Per-plugin latency is scraped from the BBR `/metrics` endpoint before and
+- **PerPlugin Latency** Per-plugin latency is scraped from the BBR `/metrics` endpoint before and
 after each gateway benchmark run.
