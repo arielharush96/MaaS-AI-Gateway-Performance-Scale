@@ -1,15 +1,29 @@
-# AI Gateway Payload Processing
-
-This repository contains Payload Processing plugins that will be connected to an AI Gateway via a pluggable BBR (Body Based Routing) framework developed as part of the [Kubernetes Inference Gateway](https://github.com/kubernetes-sigs/gateway-api-inference-extension).
-
-BBR plugins enable custom request/response mutations of both headers and body, allowing advanced capabilities such as promoting the model from a field in the body to a header and routing to a selected endpoint accordingly.
-
+phase1/
+├── run_benchmark.sh                          # Local orchestrator (your laptop)
+├── README.md
+│
+├── manifests/
+│   ├── llm-d-inference-sim.yaml              # Simulator deployment + service
+│   ├── external-models.yaml                  # ExternalModel CRs
+│   ├── httproutes.yaml                       # HTTPRoute per model
+│   ├── GuideLLM-benchmark-job.yaml           # PVC + Job (clean, no embedded scripts)
+│   ├── benchmark-sa.yaml                     # ServiceAccount + RBAC
+│   ├── secrets-dummy.yaml                    # Dummy API keys
+│   └── infrastructure/
+│       ├── rhcl-kuadrant.yaml                # RHCL operator
+│       ├── postgres.yaml                     # PostgreSQL (password sanitized)
+│       └── payload-processing-values.yaml    # BBR Helm values
+│
+└── scripts/
+    └── benchmark/                            # Run INSIDE the GuideLLM pod
+        ├── run.sh                            # Main benchmark loop
+        ├── parse.py                          # JSON→CSV parser
+        ├── plugin_delta.py                   # Plugin latency calculator
+        └── prom_monitor.py                   # Prometheus collector
+        
 ## Pre-Requisites
 
 The target cluster must have `ExternalModel` CRD deployed.  
-If you're running this deployment after `model-as-a-service`, the CRD is already included.
-if you're running this repo as a standalone, you need to deploy the CRD before running the helm chart.
-
 ## Install Payload Processing
 
 1. If ExternalModel CRD is not deployed in your cluster, deploy it using the following:
