@@ -1,3 +1,0 @@
-guidellm[recommended]
-pyyaml
-matplotlib
