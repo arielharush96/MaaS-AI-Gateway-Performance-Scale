@@ -1,11 +1,6 @@
 #!/bin/bash
 #
 # run_benchmark.sh — Local orchestrator for Phase 1 A/B benchmarks.
-#
-# Runs from your laptop. Creates the ConfigMap from standalone script files,
-# applies all Kubernetes manifests, launches the GuideLLM job, streams logs,
-# and extracts results when done.
-#
 # Usage:
 #   ./run_benchmark.sh                    # Full run (deploy + benchmark)
 #   ./run_benchmark.sh --skip-deploy      # Only create ConfigMap and launch job
