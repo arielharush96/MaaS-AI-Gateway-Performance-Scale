@@ -9,16 +9,16 @@ inference backend.
 
 ```
                         ┌─────────────────────────────────────────────────┐
-  Baseline (A):         │  GuideLLM ──► llm-d-inference-sim              │
+  Baseline (A):         │  GuideLLM ──► llm-d-inference-sim               │
                         │               (direct, OpenAI format)           │
                         └─────────────────────────────────────────────────┘
 
-                        ┌─────────────────────────────────────────────────┐
-  Gateway  (B):         │  GuideLLM ──► Envoy + BBR ──► sim              │
-                        │               (body-based routing,              │
-                        │                API translation,                 │
-                        │                plugin chain)                    │
-                        └─────────────────────────────────────────────────┘
+                        ┌────────────────────────────────────────────────----------------─┐
+  Gateway  (B):         │  GuideLLM ──► AI-Gatway(BBR+Envoy) ──► llm-d-inference- sim     │
+                        │               (body-based routing,                              │
+                        │                API translation,                                 │
+                        │                plugin chain)                                    │
+                        └─────────────────────────────────────────────────────────────────┘
 ```
 
 GuideLLM sends OpenAI-format requests to both targets. The gateway's BBR
@@ -60,9 +60,6 @@ phase1/
   1. RHCL/Kuadrant operator (`manifests/infrastructure/rhcl-kuadrant.yaml`)
   2. PostgreSQL (`manifests/infrastructure/postgres.yaml`)
   3. BBR payload-processing sidecar deployed via Helm
-     (`helm upgrade --install payload-processing deploy/payload-processing -f manifests/infrastructure/payload-processing-values.yaml`)
-- `oc` CLI authenticated to the cluster
-
 ## Quick Start
 
 ```bash
@@ -73,13 +70,6 @@ oc create secret generic guidellm-token \
 # 2. Run the full benchmark
 ./run_benchmark.sh
 ```
-
-The orchestrator will:
-1. Apply all Kubernetes manifests (simulator, external models, routes, SA, secrets)
-2. Create a ConfigMap from the benchmark scripts (`scripts/benchmark/`)
-3. Launch the GuideLLM benchmark Job
-4. Stream logs to your terminal (Ctrl+C to detach — the job keeps running)
-
 After the job completes:
 ```bash
 ./run_benchmark.sh --extract-only
@@ -129,29 +119,20 @@ The payload-processing (BBR) sidecar runs these plugins in order:
 `1, 10, 50` conversation turns
 
 ### Provider coverage
-
-**Full-translator** providers (body translated to native format):
 - `claude-sonnet-anthropic` (Anthropic Messages API)
 - `claude-sonnet-vertex` (Vertex AI GenerateContent API)
-- 4 payload sizes × 10 concurrency levels + 3 turn depths × 3 levels = **49 A/B pairs each**
-
-**Nil-translator** providers (passthrough, only path changes):
 - `gpt-4o-openai` (OpenAI)
 - `gpt-4o-azure` (Azure OpenAI)
 - `gpt-4o-bedrock` (Bedrock OpenAI)
-- Small × 10 + (medium+large+xl) × 3 + 3 turns × 1 level = **22 A/B pairs each**
-
-**Total: 2×49 + 3×22 = 164 A/B pairs = 328 benchmarks**
-
+  
 ### Benchmark parameters
 
 | Parameter        | Value  |
 |------------------|--------|
-| Duration         | 180s per benchmark (60s warmup + 120s measurement) |
+| Duration         | 180s per benchmark |
 | Hard timeout     | 300s   |
 | Streaming        | disabled |
 | GuideLLM version | v0.6.0 |
-| Tokenizer        | gpt2   |
 
 ## Monitoring
 
@@ -162,22 +143,3 @@ The benchmark pod runs a background Prometheus monitor that collects every 5 sec
 
 Per-plugin latency is scraped from the BBR `/metrics` endpoint before and
 after each gateway benchmark run.
-
-## Output
-
-Results are written to the PVC (`multi-provider-ab-results`) and dumped to
-job logs:
-
-```
-/results/
-├── summary.csv                    # Main results (one row per benchmark)
-├── plugin_latency.csv             # Per-plugin latency deltas
-├── prometheus/
-│   ├── cpu.csv
-│   ├── memory.csv
-│   ├── net_rx.csv
-│   ├── net_tx.csv
-│   └── benchmark_markers.csv
-└── <provider>/<benchmark>/<mode>/
-    └── guidellm.log
-```
