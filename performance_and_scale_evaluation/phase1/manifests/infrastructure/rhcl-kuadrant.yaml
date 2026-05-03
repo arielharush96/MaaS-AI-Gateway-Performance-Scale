@@ -1,3 +1,6 @@
+# RHCL/Kuadrant operator — manages the MaaS Gateway (Envoy + BBR).
+# Part of the platform stack — installed once per cluster via OLM.
+---
 apiVersion: v1
 kind: Namespace
 metadata:

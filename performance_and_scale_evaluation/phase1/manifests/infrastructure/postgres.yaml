@@ -1,3 +1,6 @@
+# PostgreSQL for the MaaS AI Gateway database.
+# Part of the platform stack — deployed once per cluster.
+---
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -10,7 +13,7 @@ metadata:
   namespace: maas-db
 stringData:
   POSTGRES_USER: maas
-  POSTGRES_PASSWORD: maas-perf-test-2026
+  POSTGRES_PASSWORD: <CHANGE_ME>
   POSTGRES_DB: maasdb
 ---
 apiVersion: v1

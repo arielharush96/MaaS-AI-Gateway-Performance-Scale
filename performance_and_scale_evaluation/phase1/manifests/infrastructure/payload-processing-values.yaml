@@ -1,0 +1,45 @@
+# Helm values for the payload-processing (BBR) sidecar.
+# Deployed via: helm upgrade --install payload-processing deploy/payload-processing -f <this-file>
+#
+# Plugin chain order:
+#   1. body-field-to-header  — extracts "model" from JSON body into X-Gateway-Model-Name header
+#   2. model-provider-resolver — looks up ExternalModel CR, resolves provider + credentials
+#   3. api-translation        — translates OpenAI format to native provider format
+#   4. apikey-injection       — injects API key from credentialRef secret
+upstreamBbr:
+  bbr:
+    name: payload-processing
+    replicas: 1
+    image:
+      registry: quay.io/opendatahub
+      repository: odh-ai-gateway-payload-processing
+      tag: odh-stable
+      pullPolicy: IfNotPresent
+    port: 9004
+    healthCheckPort: 9005
+    multiNamespace: true
+
+    flags:
+      v: 3
+
+    plugins:
+      - type: body-field-to-header
+        name: model-extractor
+        json:
+          fieldName: model
+          headerName: X-Gateway-Model-Name
+      - type: model-provider-resolver
+        name: model-provider-resolver
+      - type: api-translation
+        name: api-translation
+      - type: apikey-injection
+        name: apikey-injection
+
+  provider:
+    name: istio
+    istio:
+      envoyFilter:
+        operation: INSERT_BEFORE
+
+  inferenceGateway:
+    name: maas-default-gateway

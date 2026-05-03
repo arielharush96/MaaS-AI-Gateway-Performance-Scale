@@ -3,7 +3,7 @@ set -euo pipefail
 
 MANIFEST="${1:?Usage: $0 <manifest.yaml> [results-label]}"
 LABEL="${2:-$(basename "$MANIFEST" .yaml)}"
-RESULTS_BASE="/Users/aharush/ai-gateway-payload-processing/performance_and_scale_evaluation/phase1/results"
+RESULTS_BASE="$(cd "$(dirname "$0")/.." && pwd)/results"
 TSDIR="$RESULTS_BASE/$(date +%Y-%m-%d_%H-%M-%S)_${LABEL}"
 NAMESPACE="openshift-ingress"
 

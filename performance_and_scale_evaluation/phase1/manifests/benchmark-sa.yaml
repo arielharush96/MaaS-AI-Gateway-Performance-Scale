@@ -1,0 +1,22 @@
+# ServiceAccount and RBAC for the GuideLLM benchmark pod.
+# Grants read access to cluster monitoring (Prometheus/Thanos) so the
+# prom_monitor.py sidecar can collect CPU, memory, and network metrics.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: benchmark-sa
+  namespace: openshift-ingress
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: benchmark-monitoring-view
+subjects:
+- kind: ServiceAccount
+  name: benchmark-sa
+  namespace: openshift-ingress
+roleRef:
+  kind: ClusterRole
+  name: cluster-monitoring-view
+  apiGroup: rbac.authorization.k8s.io

@@ -1,0 +1,69 @@
+# GuideLLM A/B Benchmark Job
+#
+# Runs paired baseline vs gateway benchmarks for all providers using GuideLLM.
+# The benchmark scripts are mounted from a ConfigMap created by run_benchmark.sh.
+#
+# Prerequisites:
+#   - ConfigMap "multi-provider-ab-script" (created by run_benchmark.sh from scripts/benchmark/)
+#   - llm-d-inference-sim deployed with --deterministic-tokens
+#   - ExternalModel CRs applied (external-models.yaml)
+#   - HTTPRoutes applied (httproutes.yaml)
+#   - Secret "guidellm-token" exists
+#   - ServiceAccount "benchmark-sa" exists (benchmark-sa.yaml)
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: multi-provider-ab-results
+  namespace: openshift-ingress
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: multi-provider-ab-test
+  namespace: openshift-ingress
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 172800
+  template:
+    metadata:
+      labels:
+        app: multi-provider-ab-test
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      serviceAccountName: benchmark-sa
+      restartPolicy: Never
+      containers:
+      - name: guidellm
+        image: ghcr.io/vllm-project/guidellm:v0.6.0
+        command: ["/bin/bash", "/scripts/run.sh"]
+        resources:
+          requests:
+            cpu: "4"
+            memory: 8Gi
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+        - name: token
+          mountPath: /var/run/secrets/guidellm
+          readOnly: true
+        - name: results
+          mountPath: /results
+      volumes:
+      - name: scripts
+        configMap:
+          name: multi-provider-ab-script
+          defaultMode: 0755
+      - name: token
+        secret:
+          secretName: guidellm-token
+      - name: results
+        persistentVolumeClaim:
+          claimName: multi-provider-ab-results
