@@ -1,3 +1,4 @@
+```
 phase1/
 ├── run_benchmark.sh                          # Local orchestrator (your laptop)
 ├── README.md
@@ -20,7 +21,7 @@ phase1/
         ├── parse.py                          # JSON→CSV parser
         ├── plugin_delta.py                   # Plugin latency calculator
         └── prom_monitor.py                   # Prometheus collector
-        
+```
 ## Pre-Requisites
 
 The target cluster must have `ExternalModel` CRD deployed.  
