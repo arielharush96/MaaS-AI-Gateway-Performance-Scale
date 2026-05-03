@@ -1,6 +1,5 @@
 #!/bin/bash
 #
-# run_benchmark.sh — Local orchestrator for Phase 1 A/B benchmarks.
 # Usage:
 #   ./run_benchmark.sh                    # Full run (deploy + benchmark)
 #   ./run_benchmark.sh --skip-deploy      # Only create ConfigMap and launch job
@@ -12,6 +11,7 @@
 #   - guidellm-token secret created:
 #       oc create secret generic guidellm-token \
 #         --from-literal=token=dummy-key -n openshift-ingress
+
 set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-openshift-ingress}"
@@ -32,7 +32,7 @@ for arg in "$@"; do
 done
 
 echo "============================================"
-echo " MaaS AI Gateway — Phase 1 A/B Benchmark"
+echo " MaaS AI Gateway Benchmark"
 echo " Namespace: $NAMESPACE"
 echo "============================================"
 echo ""
