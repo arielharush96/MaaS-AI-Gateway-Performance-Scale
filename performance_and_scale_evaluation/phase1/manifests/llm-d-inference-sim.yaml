@@ -1,0 +1,94 @@
+# llm-d-inference-sim — multi-provider LLM simulator for performance benchmarks.
+#
+# Supports 5 API formats: OpenAI (native), Anthropic, Azure, Bedrock, Vertex AI.
+# The --deterministic-tokens flag ensures every response returns exactly
+# max_tokens output tokens, eliminating token-count variance in A/B tests.
+#
+# Image: quay.io/rh-ee-aharush/llm-d-inference-sim:multi-provider
+# Source: https://github.com/arielharush96/llm-d-inference-sim (feat/multi-provider-support)
+# Usage: oc apply -f llm-d-inference-sim.yaml -n openshift-ingress
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-d-inference-sim
+  namespace: openshift-ingress
+  labels:
+    app: llm-d-inference-sim
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: llm-d-inference-sim
+  template:
+    metadata:
+      labels:
+        app: llm-d-inference-sim
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      containers:
+      - name: llm-d-inference-sim
+        image: quay.io/rh-ee-aharush/llm-d-inference-sim:multi-provider
+        imagePullPolicy: Always
+        args:
+        - "--model"
+        - "gpt-4o-openai"
+        - "--served-model-name"
+        - "gpt-4o-openai"
+        - "gpt-4o-azure"
+        - "gpt-4o-bedrock"
+        - "claude-sonnet-anthropic"
+        - "claude-sonnet-vertex"
+        - "--port"
+        - "8000"
+        - "--mode"
+        - "random"
+        - "--providers"
+        - "anthropic,azure,bedrock,vertexai"
+        - "--max-model-len"
+        - "8192"
+        - "--max-num-seqs"
+        - "1000"
+        - "--time-to-first-token"
+        - "1"
+        - "--inter-token-latency"
+        - "1"
+        - "--deterministic-tokens"
+        ports:
+        - containerPort: 8000
+          name: http
+          protocol: TCP
+        resources:
+          requests:
+            cpu: "2"
+            memory: 4Gi
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llm-d-inference-sim
+  namespace: openshift-ingress
+  labels:
+    app: llm-d-inference-sim
+spec:
+  type: ClusterIP
+  selector:
+    app: llm-d-inference-sim
+  ports:
+  - port: 8000
+    targetPort: 8000
+    protocol: TCP
+    name: http

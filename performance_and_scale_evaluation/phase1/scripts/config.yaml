@@ -1,0 +1,96 @@
+gateway:
+  url: "https://data-science-gateway.apps.ariel-perf-xeon6.ibm.rhperfscale.org"
+
+# llm-d-inference-sim running in-cluster (used for baseline eval 01 — direct, no gateway)
+simulator:
+  url: "http://llm-d-inference-sim.openshift-ingress.svc:8000"
+
+# Direct provider endpoints — all point to in-cluster llm-d-inference-sim for baseline comparison.
+# Eval 01 sends requests directly to this URL (OpenAI format only, since GuideLLM speaks OpenAI).
+providers:
+  openai:
+    url: "http://llm-d-inference-sim.openshift-ingress.svc:8000"
+    api_key_env: "LLM_KATAN_OPENAI_KEY"
+  anthropic:
+    url: "http://llm-d-inference-sim.openshift-ingress.svc:8000"
+    api_key_env: "LLM_KATAN_ANTHROPIC_KEY"
+  azure:
+    url: "http://llm-d-inference-sim.openshift-ingress.svc:8000"
+    api_key_env: "LLM_KATAN_AZURE_KEY"
+  bedrock:
+    url: "http://llm-d-inference-sim.openshift-ingress.svc:8000"
+    api_key_env: "LLM_KATAN_BEDROCK_KEY"
+  vertex:
+    url: "http://llm-d-inference-sim.openshift-ingress.svc:8000"
+    api_key_env: "LLM_KATAN_VERTEX_KEY"
+
+# Model/channel combinations for cross-provider testing
+# Group A: same underlying model routed through different provider API formats
+# Group B: same underlying model routed through different provider API formats
+# Group C: Vertex only
+models:
+  # Group A
+  - name: "gpt-4o-openai"
+    provider: "openai"
+    target_model: "Qwen/Qwen3-0.6B"
+    group: "A"
+  - name: "gpt-4o-azure"
+    provider: "azure"
+    target_model: "Qwen/Qwen3-0.6B"
+    group: "A"
+  - name: "gpt-4o-bedrock"
+    provider: "bedrock"
+    target_model: "Qwen/Qwen3-0.6B"
+    group: "A"
+  # Group B
+  - name: "claude-sonnet-anthropic"
+    provider: "anthropic"
+    target_model: "Qwen/Qwen3-0.6B"
+    group: "B"
+  - name: "claude-sonnet-bedrock"
+    provider: "bedrock"
+    target_model: "Qwen/Qwen3-0.6B"
+    group: "B"
+  - name: "claude-sonnet-vertex"
+    provider: "vertex"
+    target_model: "Qwen/Qwen3-0.6B"
+    group: "B"
+  # Group C
+  - name: "gemini-pro-vertex"
+    provider: "vertex"
+    target_model: "Qwen/Qwen3-0.6B"
+    group: "C"
+
+# GuideLLM benchmark defaults
+benchmark:
+  request_type: "chat_completions"
+  max_seconds: 120
+  warmup: 0.1
+  cooldown: 0.1
+  max_errors: 50
+  outputs: "json,csv,html"
+
+# Payload variations for scalability testing (aligned with test plan)
+payloads:
+  small:
+    prompt_tokens: 32
+    output_tokens: 64
+  medium:
+    prompt_tokens: 256
+    output_tokens: 512
+  large:
+    prompt_tokens: 1024
+    output_tokens: 1024
+  very_large:
+    prompt_tokens: 2048
+    output_tokens: 2048
+
+# Concurrency levels for scalability sweep
+concurrency_levels: [10, 50, 100, 250, 500, 1000]
+
+# Prometheus (for plugin chain latency — eval 06)
+prometheus:
+  url: "https://prometheus-k8s.apps.ariel-perf-xeon6.ibm.rhperfscale.org"
+
+# Multi-turn conversation depths
+multi_turn_depths: [1, 10, 50, 100]

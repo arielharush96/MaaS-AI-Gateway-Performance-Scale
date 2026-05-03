@@ -1,0 +1,140 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: quick-ab-test-script
+  namespace: openshift-ingress
+data:
+  parse.py: |
+    import json, sys
+    bench_dir = sys.argv[1]
+    with open(bench_dir + '/benchmarks.json') as f:
+        data = json.load(f)
+    b = data['benchmarks'][0]
+    m = b['metrics']
+    rps = m['requests_per_second']['successful']['mean']
+    lat = m['request_latency']['successful']
+    p50 = lat['percentiles']['p50']*1000
+    p95 = lat['percentiles']['p95']*1000
+    p99 = lat['percentiles']['p99']*1000
+    mean_lat = lat['mean']*1000
+    print(f'  RPS={rps:.1f}  mean={mean_lat:.1f}ms  p50={p50:.1f}ms  p95={p95:.1f}ms  p99={p99:.1f}ms')
+  run.sh: |
+    #!/bin/bash
+    set -e
+
+    SIMULATOR="http://llm-d-inference-sim.openshift-ingress.svc.cluster.local:8000"
+    GATEWAY="http://maas-default-gateway-data-science-gateway-class.openshift-ingress.svc.cluster.local:80"
+    MODEL="gpt-4o-openai"
+    export OPENAI_API_KEY=$(cat /var/run/secrets/guidellm/token)
+    RESULTS="/results"
+    PROCESSOR="gpt2"
+    NON_STREAMING='{"stream": false}'
+    MAX_SEC=30
+    WARMUP=0.1
+    COOLDOWN=0.0
+
+    echo "============================================"
+    echo " Quick A/B Test: Baseline vs Gateway"
+    echo " Simulator TTFT=1ms ITL=1ms"
+    echo " Payload: 1024/1024 tokens"
+    echo " Concurrency: 16, 64, 256"
+    echo " Duration: 30s each"
+    echo " Started: $(date -Iseconds)"
+    echo "============================================"
+    echo ""
+
+    run_bench() {
+        local name="$1" target="$2" concurrency="$3"
+        local dir="$RESULTS/$name"
+        mkdir -p "$dir"
+
+        echo ">>> [$name] concurrency=$concurrency"
+
+        guidellm benchmark run \
+            --target "$target" \
+            --model "$MODEL" \
+            --processor "$PROCESSOR" \
+            --data "prompt_tokens=1024,output_tokens=1024" \
+            --profile concurrent \
+            --rate "$concurrency" \
+            --max-seconds "$MAX_SEC" \
+            --warmup "$WARMUP" \
+            --cooldown "$COOLDOWN" \
+            --backend-kwargs "$NON_STREAMING" \
+            --output-dir "$dir" \
+            --outputs json \
+            --disable-progress \
+            > "$dir/guidellm.log" 2>&1 || true
+
+        if [ -f "$dir/benchmarks.json" ]; then
+            python3 /scripts/parse.py "$dir"
+        else
+            echo "  FAILED - check log"
+            tail -3 "$dir/guidellm.log"
+        fi
+        echo ""
+    }
+
+    echo "=== PHASE 1: BASELINE (direct to simulator) ==="
+    echo ""
+    for C in 16 64 256; do
+        run_bench "baseline-c${C}" "${SIMULATOR}" "$C"
+    done
+
+    echo "=== PHASE 2: GATEWAY (through AI gateway) ==="
+    echo ""
+    for C in 16 64 256; do
+        run_bench "gateway-c${C}" "${GATEWAY}/${MODEL}" "$C"
+    done
+
+    echo "============================================"
+    echo " A/B TEST COMPLETE"
+    echo " Finished: $(date -Iseconds)"
+    echo "============================================"
+    echo ""
+    echo "=== RESULTS_READY ==="
+    tail -f /dev/null
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: quick-ab-test
+  namespace: openshift-ingress
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 3600
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: guidellm
+        image: ghcr.io/vllm-project/guidellm:v0.6.0
+        command: ["/bin/bash", "/scripts/run.sh"]
+        resources:
+          requests:
+            cpu: "4"
+            memory: 4Gi
+          limits:
+            cpu: "8"
+            memory: 8Gi
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+        - name: token
+          mountPath: /var/run/secrets/guidellm
+          readOnly: true
+        - name: results
+          mountPath: /results
+      volumes:
+      - name: scripts
+        configMap:
+          name: quick-ab-test-script
+          defaultMode: 0755
+      - name: token
+        secret:
+          secretName: guidellm-token
+      - name: results
+        emptyDir: {}

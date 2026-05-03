@@ -1,0 +1,195 @@
+# HTTPRoutes for performance evaluation — one per ExternalModel.
+# All models share the same backend (llm-d-inference-sim); the BBR plugin
+# chain handles per-provider API translation.
+#
+# Each route has two match rules:
+#   Rule 1: path prefix /<model-name>/ with URL rewrite (legacy/manual testing)
+#   Rule 2: header X-Gateway-Model-Name == <model-name> (used by A/B benchmarks)
+#
+# Nil-translator models:
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: perf-gpt-4o-openai
+  namespace: openshift-ingress
+spec:
+  parentRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: maas-default-gateway
+    namespace: openshift-ingress
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /gpt-4o-openai/
+    backendRefs:
+    - name: llm-d-inference-sim
+      port: 8000
+    filters:
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: /
+  - matches:
+    - headers:
+      - name: X-Gateway-Model-Name
+        type: Exact
+        value: gpt-4o-openai
+      path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: llm-d-inference-sim
+      port: 8000
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: perf-gpt-4o-azure
+  namespace: openshift-ingress
+spec:
+  parentRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: maas-default-gateway
+    namespace: openshift-ingress
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /gpt-4o-azure/
+    backendRefs:
+    - name: llm-d-inference-sim
+      port: 8000
+    filters:
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: /
+  - matches:
+    - headers:
+      - name: X-Gateway-Model-Name
+        type: Exact
+        value: gpt-4o-azure
+      path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: llm-d-inference-sim
+      port: 8000
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: perf-gpt-4o-bedrock
+  namespace: openshift-ingress
+spec:
+  parentRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: maas-default-gateway
+    namespace: openshift-ingress
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /gpt-4o-bedrock/
+    backendRefs:
+    - name: llm-d-inference-sim
+      port: 8000
+    filters:
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: /
+  - matches:
+    - headers:
+      - name: X-Gateway-Model-Name
+        type: Exact
+        value: gpt-4o-bedrock
+      path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: llm-d-inference-sim
+      port: 8000
+# Full-translator models:
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: perf-claude-sonnet-anthropic
+  namespace: openshift-ingress
+spec:
+  parentRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: maas-default-gateway
+    namespace: openshift-ingress
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /claude-sonnet-anthropic/
+    backendRefs:
+    - name: llm-d-inference-sim
+      port: 8000
+    filters:
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: /
+  - matches:
+    - headers:
+      - name: X-Gateway-Model-Name
+        type: Exact
+        value: claude-sonnet-anthropic
+      path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: llm-d-inference-sim
+      port: 8000
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: perf-claude-sonnet-vertex
+  namespace: openshift-ingress
+spec:
+  parentRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: maas-default-gateway
+    namespace: openshift-ingress
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /claude-sonnet-vertex/
+    backendRefs:
+    - name: llm-d-inference-sim
+      port: 8000
+    filters:
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: /
+  - matches:
+    - headers:
+      - name: X-Gateway-Model-Name
+        type: Exact
+        value: claude-sonnet-vertex
+      path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: llm-d-inference-sim
+      port: 8000

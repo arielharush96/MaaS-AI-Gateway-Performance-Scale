@@ -1,0 +1,185 @@
+# Quick Validation Test — 1 benchmark, 15s
+#
+# Validates the full pipeline: GuideLLM runs, JSON created,
+# save_metrics.py extracts metrics/CSV/TXT, pod stays alive for extraction.
+#
+# Usage:
+#   ./run_pipeline.sh test
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: test-quick-script
+  namespace: openshift-ingress
+data:
+  save_metrics.py: |
+    #!/usr/bin/env python3
+    import json, os, sys
+
+    bench_dir = sys.argv[1]
+    name = sys.argv[2]
+    pt, ot, conc = sys.argv[3], sys.argv[4], sys.argv[5]
+    csv_path = sys.argv[6]
+
+    with open(os.path.join(bench_dir, "benchmarks.json")) as f:
+        data = json.load(f)
+
+    b = data["benchmarks"][0]
+    m = b["metrics"]
+    rt = m["request_totals"]
+    rps_val = m["requests_per_second"]["successful"]["mean"]
+    lat = m["request_latency"]["successful"]["percentiles"]
+    p50, p95, p99 = lat["p50"]*1000, lat["p95"]*1000, lat["p99"]*1000
+    dur = b["duration"]
+    wu = b["warmup_duration"]
+
+    clean = json.loads(json.dumps(data))
+    for bm in clean.get("benchmarks", []):
+        bm.pop("requests", None)
+    with open(os.path.join(bench_dir, "metrics.json"), "w") as f:
+        json.dump(clean, f, indent=2)
+
+    with open(os.path.join(bench_dir, "summary.txt"), "w") as f:
+        f.write(f"Benchmark: {name}\n")
+        f.write(f"Params: prompt={pt} output={ot} concurrency={conc}\n")
+        f.write(f"Duration: {dur:.1f}s  Warmup: {wu:.1f}s\n")
+        f.write(f"Requests: {rt['successful']} ok, {rt['errored']} err, "
+                f"{rt.get('incomplete', 0)} inc (total: {rt['total']})\n")
+        f.write(f"RPS: {rps_val:.2f}\n")
+        f.write(f"Latency: p50={p50:.1f}ms  p95={p95:.1f}ms  p99={p99:.1f}ms\n")
+
+    with open(csv_path, "a") as f:
+        f.write(f"{name},{pt},{ot},{conc},{rt['successful']},{rt['errored']},"
+                f"{rt.get('incomplete', 0)},{rt['total']},{rps_val:.4f},"
+                f"{p50:.2f},{p95:.2f},{p99:.2f},{dur:.1f},{wu:.1f}\n")
+
+    print(f"  RPS={rps_val:.2f}  p50={p50:.1f}ms  p95={p95:.1f}ms  "
+          f"p99={p99:.1f}ms  ok={rt['successful']} err={rt['errored']}")
+
+  run.sh: |
+    #!/bin/bash
+    set -e
+
+    TARGET="http://llm-d-inference-sim.openshift-ingress.svc.cluster.local:8000"
+    MODEL="gpt-4o-openai"
+    export OPENAI_API_KEY="dummy"
+    export GUIDELLM__LOGGING__CONSOLE_LOG_LEVEL=INFO
+    RESULTS="/results"
+    PROCESSOR="gpt2"
+    NON_STREAMING='{"stream": false}'
+
+    MAX_SEC=15
+    WARMUP=0.2
+    COOLDOWN=0.0
+
+    echo "============================================"
+    echo " Quick Validation Test"
+    echo "============================================"
+    echo " Target:       $TARGET"
+    echo " Model:        $MODEL"
+    echo " Per-bench:    ${MAX_SEC}s"
+    echo " Started:      $(date -Iseconds)"
+    echo "============================================"
+
+    TOTAL=0; PASS=0; FAIL=0
+
+    echo "benchmark,prompt_tokens,output_tokens,concurrency,successful,errored,incomplete,total,rps_mean,lat_p50_ms,lat_p95_ms,lat_p99_ms,duration_s,warmup_s" > "$RESULTS/summary.csv"
+
+    dir="$RESULTS/test-small-c2"
+    mkdir -p "$dir"
+    TOTAL=1
+
+    echo ""
+    echo ">>> [test-small-c2] (#1) prompt=32 output=64 concurrency=2"
+
+    ec=0
+    guidellm benchmark run \
+        --target "$TARGET" \
+        --model "$MODEL" \
+        --processor "$PROCESSOR" \
+        --data "prompt_tokens=32,output_tokens=64" \
+        --profile concurrent \
+        --rate 2 \
+        --max-seconds "$MAX_SEC" \
+        --warmup "$WARMUP" \
+        --cooldown "$COOLDOWN" \
+        --backend-kwargs "$NON_STREAMING" \
+        --output-dir "$dir" \
+        --outputs json \
+        --disable-progress \
+        > "$dir/guidellm.log" 2>&1 || ec=$?
+
+    if [ $ec -eq 0 ]; then
+        PASS=1
+    else
+        echo "  WARN: exit code $ec"
+        FAIL=1
+    fi
+
+    if [ -f "$dir/benchmarks.json" ]; then
+        python3 /scripts/save_metrics.py "$dir" "test-small-c2" "32" "64" "2" "$RESULTS/summary.csv" || \
+            echo "  WARN: metrics extraction failed"
+        echo "  Files: $(ls "$dir/" | tr '\n' ' ')"
+    else
+        echo "  ERROR: benchmarks.json not created!"
+        tail -10 "$dir/guidellm.log" 2>/dev/null || true
+    fi
+
+    echo "<<< [test-small-c2] done (pass=$PASS fail=$FAIL)"
+
+    echo ""
+    echo "============================================"
+    echo " TEST COMPLETE: $PASS/$TOTAL passed"
+    echo " Files: $(find $RESULTS -type f | wc -l)"
+    echo "============================================"
+    echo ""
+    echo "--- Summary CSV ---"
+    cat "$RESULTS/summary.csv"
+    echo ""
+    echo "--- Files in result dir ---"
+    find "$RESULTS" -type f | sort
+    echo ""
+    echo "=== RESULTS_READY ==="
+    echo "Test pod staying alive for extraction validation."
+    tail -f /dev/null
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: guidellm-test-quick
+  namespace: openshift-ingress
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 3600
+  template:
+    metadata:
+      labels:
+        app: guidellm-test-quick
+        stage: test
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: guidellm
+        image: ghcr.io/vllm-project/guidellm:v0.6.0
+        command: ["/bin/bash", "/scripts/run.sh"]
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+        - name: results
+          mountPath: /results
+        resources:
+          requests:
+            cpu: "2"
+            memory: 2Gi
+          limits:
+            cpu: "4"
+            memory: 4Gi
+      volumes:
+      - name: scripts
+        configMap:
+          name: test-quick-script
+          defaultMode: 0755
+      - name: results
+        emptyDir: {}

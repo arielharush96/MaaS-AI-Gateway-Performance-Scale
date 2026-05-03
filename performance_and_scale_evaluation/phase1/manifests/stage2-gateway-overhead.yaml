@@ -1,0 +1,229 @@
+# Stage 2 (AC2): Gateway Overhead — Single Replica
+#
+# Same test matrix as Stage 1, but routed through the MaaS AI Gateway.
+# Subtracting Stage 1 isolates the gateway plugin chain overhead.
+#
+# Test matrix: 4 payloads × 10 levels + 4 depths × 10 levels = 80 benchmarks
+# Each benchmark: 30s warmup + 120s measurement = 150s
+# Estimated runtime: ~3.5 hours
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: stage2-gateway-script
+  namespace: openshift-ingress
+data:
+  save_metrics.py: |
+    #!/usr/bin/env python3
+    import json, os, sys
+
+    bench_dir = sys.argv[1]
+    name = sys.argv[2]
+    pt, ot, conc = sys.argv[3], sys.argv[4], sys.argv[5]
+    csv_path = sys.argv[6]
+
+    with open(os.path.join(bench_dir, "benchmarks.json")) as f:
+        data = json.load(f)
+
+    b = data["benchmarks"][0]
+    m = b["metrics"]
+    rt = m["request_totals"]
+    rps_val = m["requests_per_second"]["successful"]["mean"]
+    lat = m["request_latency"]["successful"]["percentiles"]
+    p50, p95, p99 = lat["p50"]*1000, lat["p95"]*1000, lat["p99"]*1000
+    dur = b["duration"]
+    wu = b["warmup_duration"]
+
+    clean = json.loads(json.dumps(data))
+    for bm in clean.get("benchmarks", []):
+        bm.pop("requests", None)
+    with open(os.path.join(bench_dir, "metrics.json"), "w") as f:
+        json.dump(clean, f, indent=2)
+
+    with open(os.path.join(bench_dir, "summary.txt"), "w") as f:
+        f.write(f"Benchmark: {name}\n")
+        f.write(f"Params: prompt={pt} output={ot} concurrency={conc}\n")
+        f.write(f"Duration: {dur:.1f}s  Warmup: {wu:.1f}s\n")
+        f.write(f"Requests: {rt['successful']} ok, {rt['errored']} err, "
+                f"{rt.get('incomplete', 0)} inc (total: {rt['total']})\n")
+        f.write(f"RPS: {rps_val:.2f}\n")
+        f.write(f"Latency: p50={p50:.1f}ms  p95={p95:.1f}ms  p99={p99:.1f}ms\n")
+
+    with open(csv_path, "a") as f:
+        f.write(f"{name},{pt},{ot},{conc},{rt['successful']},{rt['errored']},"
+                f"{rt.get('incomplete', 0)},{rt['total']},{rps_val:.4f},"
+                f"{p50:.2f},{p95:.2f},{p99:.2f},{dur:.1f},{wu:.1f}\n")
+
+    print(f"  RPS={rps_val:.2f}  p50={p50:.1f}ms  p95={p95:.1f}ms  "
+          f"p99={p99:.1f}ms  ok={rt['successful']} err={rt['errored']}")
+
+  run.sh: |
+    #!/bin/bash
+    set -e
+
+    GATEWAY="http://maas-default-gateway-data-science-gateway-class.openshift-ingress.svc.cluster.local:80"
+    MODEL="gpt-4o-openai"
+    TARGET="${GATEWAY}/${MODEL}"
+    export OPENAI_API_KEY=$(cat /var/run/secrets/guidellm/token)
+    export GUIDELLM__LOGGING__CONSOLE_LOG_LEVEL=INFO
+    RESULTS="/results"
+    PROCESSOR="gpt2"
+    NON_STREAMING='{"stream": false}'
+
+    MAX_SEC=150
+    WARMUP=0.2
+    COOLDOWN=0.0
+    LEVELS=(2 4 8 16 32 64 128 256 512 1024)
+
+    echo "============================================"
+    echo " Stage 2 (AC2): Gateway Overhead (Single Replica)"
+    echo "============================================"
+    echo " Gateway:      $GATEWAY"
+    echo " Target:       $TARGET"
+    echo " Model:        $MODEL"
+    echo " Per-bench:    ${MAX_SEC}s (30s warmup + 120s measurement)"
+    echo " Levels:       ${LEVELS[*]}"
+    echo " Mode:         NON-STREAMING"
+    echo " Started:      $(date -Iseconds)"
+    echo "============================================"
+
+    TOTAL=0; PASS=0; FAIL=0
+
+    echo "benchmark,prompt_tokens,output_tokens,concurrency,successful,errored,incomplete,total,rps_mean,lat_p50_ms,lat_p95_ms,lat_p99_ms,duration_s,warmup_s" > "$RESULTS/summary.csv"
+
+    run_bench() {
+        local name="$1" pt="$2" ot="$3" concurrency="$4" turns="${5:-}"
+        local dir="$RESULTS/$name"
+        mkdir -p "$dir"
+        TOTAL=$((TOTAL + 1))
+
+        local data_arg="prompt_tokens=${pt},output_tokens=${ot}"
+        [ -n "$turns" ] && data_arg="${data_arg},turns=${turns}"
+
+        echo ""
+        echo ">>> [$name] (#$TOTAL) prompt=$pt output=$ot concurrency=$concurrency${turns:+ turns=$turns}"
+
+        local ec=0
+        guidellm benchmark run \
+            --target "$TARGET" \
+            --model "$MODEL" \
+            --processor "$PROCESSOR" \
+            --data "$data_arg" \
+            --profile concurrent \
+            --rate "$concurrency" \
+            --max-seconds "$MAX_SEC" \
+            --warmup "$WARMUP" \
+            --cooldown "$COOLDOWN" \
+            --backend-kwargs "$NON_STREAMING" \
+            --output-dir "$dir" \
+            --outputs json \
+            --disable-progress \
+            > "$dir/guidellm.log" 2>&1 || ec=$?
+
+        if [ $ec -eq 0 ]; then
+            PASS=$((PASS + 1))
+        else
+            echo "  WARN: exit code $ec"
+            FAIL=$((FAIL + 1))
+        fi
+
+        if [ -f "$dir/benchmarks.json" ]; then
+            python3 /scripts/save_metrics.py "$dir" "$name" "$pt" "$ot" "$concurrency" "$RESULTS/summary.csv" || \
+                echo "  WARN: metrics extraction failed"
+            echo "  Files: $(ls "$dir/" | tr '\n' ' ')"
+        else
+            echo "  ERROR: benchmarks.json not created!"
+            tail -5 "$dir/guidellm.log" 2>/dev/null || true
+        fi
+
+        echo "<<< [$name] done (pass=$PASS fail=$FAIL)"
+    }
+
+    echo ""
+    echo "=== Section 1/2: Payload Size x Concurrency (40 benchmarks) ==="
+
+    PAYLOADS="small:32:64 medium:256:512 large:1024:1024 very-large:2048:2048"
+    for spec in $PAYLOADS; do
+        IFS=: read -r pname pt ot <<< "$spec"
+        for C in "${LEVELS[@]}"; do
+            run_bench "payload-${pname}-c${C}" "$pt" "$ot" "$C"
+        done
+    done
+
+    echo ""
+    echo "=== Section 2/2: Multi-Turn Depth x Concurrency (40 benchmarks) ==="
+
+    MULTI_TURNS="1:64:128 10:64:128 50:64:128 100:64:128"
+    for spec in $MULTI_TURNS; do
+        IFS=: read -r turns pt ot <<< "$spec"
+        for C in "${LEVELS[@]}"; do
+            run_bench "multiturn-${turns}-c${C}" "$pt" "$ot" "$C" "$turns"
+        done
+    done
+
+    echo ""
+    echo "============================================"
+    echo " STAGE 2 COMPLETE"
+    echo " Total: $TOTAL  Passed: $PASS  Failed: $FAIL"
+    echo " Files: $(find $RESULTS -type f | wc -l)"
+    echo " JSON:  $(find $RESULTS -name '*.json' | wc -l)"
+    echo " Finished: $(date -Iseconds)"
+    echo "============================================"
+    echo ""
+    echo "--- Summary CSV ---"
+    cat "$RESULTS/summary.csv"
+    echo ""
+    echo "=== RESULTS_READY ==="
+    echo "Pod staying alive for result extraction. Kill with:"
+    echo "  oc delete job guidellm-stage2-gateway -n openshift-ingress"
+    tail -f /dev/null
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: guidellm-stage2-gateway
+  namespace: openshift-ingress
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 50000
+  template:
+    metadata:
+      labels:
+        app: guidellm-stage2-gateway
+        stage: gateway-overhead
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: guidellm
+        image: ghcr.io/vllm-project/guidellm:v0.6.0
+        command: ["/bin/bash", "/scripts/run.sh"]
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+        - name: token
+          mountPath: /var/run/secrets/guidellm
+          readOnly: true
+        - name: results
+          mountPath: /results
+        resources:
+          requests:
+            cpu: "4"
+            memory: 4Gi
+            ephemeral-storage: 20Gi
+          limits:
+            cpu: "8"
+            memory: 8Gi
+            ephemeral-storage: 25Gi
+      volumes:
+      - name: scripts
+        configMap:
+          name: stage2-gateway-script
+          defaultMode: 0755
+      - name: token
+        secret:
+          secretName: guidellm-token
+      - name: results
+        emptyDir:
+          sizeLimit: 20Gi

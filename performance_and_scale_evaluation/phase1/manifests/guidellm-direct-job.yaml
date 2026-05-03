@@ -1,0 +1,55 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: guidellm-direct
+  namespace: openshift-ingress
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: guidellm-direct
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: guidellm
+        image: ghcr.io/vllm-project/guidellm:v0.6.0
+        env:
+        - name: OPENAI_API_KEY
+          value: dummy
+        command: ["guidellm"]
+        args:
+        - benchmark
+        - run
+        - --target
+        - http://llm-d-inference-sim.openshift-ingress.svc:8000
+        - --model
+        - testmodel
+        - --processor
+        - gpt2
+        - --data
+        - prompt_tokens=128,output_tokens=128
+        - --profile
+        - synchronous
+        - --max-seconds
+        - "120"
+        - --max-requests
+        - "50"
+        - --output-dir
+        - /results
+        - --outputs
+        - json
+        resources:
+          requests:
+            cpu: "1"
+            memory: 2Gi
+          limits:
+            cpu: "2"
+            memory: 4Gi
+        volumeMounts:
+        - name: results
+          mountPath: /results
+      volumes:
+      - name: results
+        emptyDir: {}

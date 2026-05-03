@@ -1,0 +1,176 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: auth-proxy-script
+  namespace: openshift-ingress
+data:
+  proxy.py: |
+    import asyncio, ssl, time, sys, os
+    import aiohttp
+    from aiohttp import web
+
+    GW = os.environ.get("GATEWAY_URL", "https://data-science-gateway-data-science-gateway-class.openshift-ingress.svc:443")
+    USER = os.environ.get("AUTH_USER", "perfuser")
+    PASS = os.environ.get("AUTH_PASS", "perfpass123")
+
+    class Proxy:
+        def __init__(self):
+            self.cookies = {}
+            self._lock = asyncio.Lock()
+            self._ssl = ssl.create_default_context()
+            self._ssl.check_hostname = False
+            self._ssl.verify_mode = ssl.CERT_NONE
+
+        async def login(self):
+            async with self._lock:
+                if self.cookies:
+                    return
+                print("[proxy] Authenticating...", flush=True)
+                jar = aiohttp.CookieJar(unsafe=True)
+                conn = aiohttp.TCPConnector(ssl=self._ssl)
+                async with aiohttp.ClientSession(cookie_jar=jar, connector=conn) as s:
+                    async with s.get(f"{GW}/v1/models", allow_redirects=False) as r:
+                        redir = r.headers.get("Location", "")
+                    auth = aiohttp.BasicAuth(USER, PASS)
+                    async with s.get(redir, headers={"X-CSRF-Token": "1"}, auth=auth, allow_redirects=False) as r:
+                        cb = r.headers.get("Location", "")
+                    async with s.get(cb, allow_redirects=False):
+                        pass
+                self.cookies = {c.key: c.value for c in jar}
+                print(f"[proxy] Got {len(self.cookies)} cookies", flush=True)
+
+        async def handle(self, req):
+            await self.login()
+            hdrs = dict(req.headers)
+            hdrs.pop("Host", None); hdrs.pop("host", None)
+            hdrs["Cookie"] = "; ".join(f"{k}={v}" for k, v in self.cookies.items())
+            body = await req.read()
+            conn = aiohttp.TCPConnector(ssl=self._ssl)
+            async with aiohttp.ClientSession(connector=conn) as s:
+                async with s.request(req.method, f"{GW}{req.path_qs}", headers=hdrs, data=body) as up:
+                    is_sse = "text/event-stream" in up.headers.get("Content-Type", "")
+                    rh = {k: v for k, v in up.headers.items() if k.lower() not in ("transfer-encoding", "content-encoding", "content-length")}
+                    if is_sse:
+                        resp = web.StreamResponse(status=up.status, headers=rh)
+                        resp.content_type = "text/event-stream"
+                        await resp.prepare(req)
+                        async for chunk in up.content.iter_any():
+                            await resp.write(chunk)
+                        await resp.write_eof()
+                        return resp
+                    return web.Response(status=up.status, headers=rh, body=await up.read())
+
+    async def main():
+        p = Proxy()
+        await p.login()
+        app = web.Application()
+        app.router.add_route("*", "/{path_info:.*}", p.handle)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        await web.TCPSite(runner, "127.0.0.1", 9090).start()
+        print("[proxy] Ready on :9090", flush=True)
+        with open("/tmp/proxy_ready", "w") as f:
+            f.write("ready")
+        await asyncio.Event().wait()
+
+    asyncio.run(main())
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: guidellm-gateway
+  namespace: openshift-ingress
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: guidellm-gateway
+    spec:
+      restartPolicy: Never
+      shareProcessNamespace: true
+      initContainers:
+      - name: auth-proxy-init
+        image: python:3.11-slim
+        env:
+        - name: HOME
+          value: /tmp/home
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          mkdir -p /tmp/home
+          pip install --quiet --user aiohttp
+          cp -r /tmp/home/.local /shared/.local
+        volumeMounts:
+        - name: shared
+          mountPath: /shared
+      containers:
+      - name: auth-proxy
+        image: python:3.11-slim
+        env:
+        - name: HOME
+          value: /tmp/home
+        - name: PYTHONPATH
+          value: /shared/.local/lib/python3.11/site-packages
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          mkdir -p /tmp/home
+          export PYTHONPATH="/shared/.local/lib/python3.11/site-packages:$PYTHONPATH"
+          python3 /scripts/proxy.py
+        volumeMounts:
+        - name: proxy-script
+          mountPath: /scripts
+        - name: shared
+          mountPath: /shared
+        resources:
+          requests:
+            cpu: 250m
+            memory: 256Mi
+      - name: guidellm
+        image: ghcr.io/vllm-project/guidellm:v0.6.0
+        env:
+        - name: OPENAI_API_KEY
+          value: dummy
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          echo "Waiting for auth proxy..."
+          for i in $(seq 1 60); do
+            curl -s http://127.0.0.1:9090/health > /dev/null 2>&1 && break
+            sleep 1
+          done
+          echo "Auth proxy ready, starting benchmark"
+
+          guidellm benchmark run \
+            --target 'http://127.0.0.1:9090/gpt-4o-openai' \
+            --model testmodel \
+            --processor gpt2 \
+            --data 'prompt_tokens=128,output_tokens=128' \
+            --profile synchronous \
+            --max-seconds 120 \
+            --max-requests 50 \
+            --output-dir /results \
+            --outputs json
+
+          echo "=== Benchmark complete ==="
+          cat /results/benchmarks.json
+        resources:
+          requests:
+            cpu: "1"
+            memory: 2Gi
+          limits:
+            cpu: "2"
+            memory: 4Gi
+        volumeMounts:
+        - name: results
+          mountPath: /results
+      volumes:
+      - name: proxy-script
+        configMap:
+          name: auth-proxy-script
+      - name: results
+        emptyDir: {}
+      - name: shared
+        emptyDir: {}

@@ -1,0 +1,195 @@
+# One-shot Job: ingest all PVC-stored results into MLflow.
+# Re-run after each benchmark completes to update MLflow.
+# Usage: oc delete job mlflow-ingest -n openshift-ingress --ignore-not-found && oc apply -f mlflow-ingest-job.yaml
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mlflow-ingest-script
+  namespace: openshift-ingress
+data:
+  ingest.sh: |
+    #!/bin/bash
+    set -e
+    pip install mlflow --quiet 2>/dev/null
+
+    MLFLOW_URI="http://mlflow.openshift-ingress.svc.cluster.local:5000"
+
+    if [ -f /results/openai/summary.csv ]; then
+        echo ">>> Ingesting OpenAI A/B test results..."
+        python3 /scripts/ingest.py --tracking-uri "$MLFLOW_URI" \
+            --csv /results/openai/summary.csv \
+            --experiment "Stage 1+2: OpenAI (gpt-4o)"
+    fi
+
+    if [ -f /results/multi-provider/summary.csv ]; then
+        echo ">>> Ingesting Multi-Provider results..."
+        python3 /scripts/ingest.py --tracking-uri "$MLFLOW_URI" \
+            --csv /results/multi-provider/summary.csv \
+            --plugin-csv /results/multi-provider/plugin_latency.csv \
+            --experiment "Stage 2+4: Multi-Provider"
+    fi
+
+    echo ">>> Ingestion complete!"
+  ingest.py: |
+    #!/usr/bin/env python3
+    import argparse, csv, os, mlflow
+
+    def parse_benchmark_name(name):
+        info = {}
+        if "multiturn" in name:
+            parts = name.split("-")
+            info["test_type"] = "multi-turn"
+            info["turns"] = int(parts[1])
+            info["concurrency"] = int(parts[2].replace("c", ""))
+            info["payload_label"] = "64/128"
+        else:
+            parts = name.rsplit("-c", 1)
+            info["test_type"] = "payload"
+            info["concurrency"] = int(parts[1])
+            info["payload_label"] = parts[0].replace("payload-", "")
+            info["turns"] = 0
+        return info
+
+    def ingest_csv(csv_path, experiment_name, tracking_uri):
+        mlflow.set_tracking_uri(tracking_uri)
+        mlflow.set_experiment(experiment_name)
+        rows = []
+        with open(csv_path) as f:
+            reader = csv.DictReader(f)
+            has_provider = "provider" in reader.fieldnames
+            for row in reader:
+                rows.append(row)
+
+        print(f"  {len(rows)} rows from {csv_path}")
+        benchmarks = {}
+        for row in rows:
+            key = row.get("provider", "") + "/" + row["benchmark"] if has_provider else row["benchmark"]
+            if key not in benchmarks:
+                benchmarks[key] = {}
+            benchmarks[key][row["mode"]] = row
+
+        logged = 0
+        for bench_key, modes in sorted(benchmarks.items()):
+            for mode_name, row in modes.items():
+                info = parse_benchmark_name(row["benchmark"])
+                with mlflow.start_run(run_name=f"{bench_key}/{mode_name}"):
+                    mlflow.set_tag("benchmark", row["benchmark"])
+                    mlflow.set_tag("mode", mode_name)
+                    mlflow.set_tag("test_type", info["test_type"])
+                    mlflow.set_tag("payload_label", info["payload_label"])
+                    if has_provider:
+                        mlflow.set_tag("provider", row.get("provider", ""))
+                    mlflow.log_param("prompt_tokens", int(row["prompt_tokens"]))
+                    mlflow.log_param("output_tokens", int(row["output_tokens"]))
+                    mlflow.log_param("concurrency", info["concurrency"])
+                    mlflow.log_param("turns", info["turns"])
+                    mlflow.log_param("mode", mode_name)
+                    mlflow.log_metric("p95_ms", float(row["p95_ms"]))
+                    mlflow.log_metric("p99_ms", float(row["p99_ms"]))
+                    mlflow.log_metric("mean_ms", float(row["mean_ms"]))
+                    mlflow.log_metric("p50_ms", float(row["p50_ms"]))
+                    mlflow.log_metric("rps", float(row["rps"]))
+                    mlflow.log_metric("successful", int(row["successful"]))
+                    mlflow.log_metric("errored", int(row["errored"]))
+                    logged += 1
+
+            if "baseline" in modes and "gateway" in modes:
+                b, g = modes["baseline"], modes["gateway"]
+                info = parse_benchmark_name(b["benchmark"])
+                with mlflow.start_run(run_name=f"{bench_key}/overhead"):
+                    mlflow.set_tag("benchmark", b["benchmark"])
+                    mlflow.set_tag("mode", "overhead")
+                    mlflow.set_tag("test_type", info["test_type"])
+                    mlflow.set_tag("payload_label", info["payload_label"])
+                    if has_provider:
+                        mlflow.set_tag("provider", b.get("provider", ""))
+                    mlflow.log_param("concurrency", info["concurrency"])
+                    mlflow.log_param("turns", info["turns"])
+                    mlflow.log_param("mode", "overhead")
+                    bp95, gp95 = float(b["p95_ms"]), float(g["p95_ms"])
+                    bp99, gp99 = float(b["p99_ms"]), float(g["p99_ms"])
+                    mlflow.log_metric("overhead_p95_ms", gp95 - bp95)
+                    mlflow.log_metric("overhead_p99_ms", gp99 - bp99)
+                    mlflow.log_metric("overhead_p95_pct", ((gp95 - bp95) / bp95) * 100 if bp95 > 0 else 0)
+                    mlflow.log_metric("overhead_mean_ms", float(g["mean_ms"]) - float(b["mean_ms"]))
+                    mlflow.log_metric("rps_baseline", float(b["rps"]))
+                    mlflow.log_metric("rps_gateway", float(g["rps"]))
+                    logged += 1
+        print(f"  Logged {logged} runs")
+
+    def ingest_plugin_csv(csv_path, experiment_name, tracking_uri):
+        if not os.path.exists(csv_path):
+            return
+        mlflow.set_tracking_uri(tracking_uri)
+        mlflow.set_experiment(f"{experiment_name} - Plugin Latency")
+        with open(csv_path) as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+        print(f"  {len(rows)} plugin latency rows")
+        for row in rows:
+            with mlflow.start_run(run_name=f"{row['benchmark']}/{row['plugin_name']}"):
+                mlflow.set_tag("benchmark", row["benchmark"])
+                mlflow.set_tag("extension_point", row["extension_point"])
+                mlflow.set_tag("plugin_type", row["plugin_type"])
+                mlflow.set_tag("plugin_name", row["plugin_name"])
+                mlflow.log_metric("avg_latency_us", float(row["avg_latency_us"]))
+                mlflow.log_metric("requests", int(row["requests"]))
+
+    if __name__ == "__main__":
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--tracking-uri", required=True)
+        parser.add_argument("--csv", required=True)
+        parser.add_argument("--plugin-csv", default=None)
+        parser.add_argument("--experiment", required=True)
+        args = parser.parse_args()
+        ingest_csv(args.csv, args.experiment, args.tracking_uri)
+        if args.plugin_csv and os.path.exists(args.plugin_csv):
+            ingest_plugin_csv(args.plugin_csv, args.experiment, args.tracking_uri)
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mlflow-ingest
+  namespace: openshift-ingress
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app: mlflow-ingest
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: ingest
+        image: python:3.11-slim
+        command: ["/bin/bash", "/scripts/ingest.sh"]
+        resources:
+          requests:
+            cpu: "500m"
+            memory: 512Mi
+          limits:
+            cpu: "1"
+            memory: 1Gi
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+        - name: openai-results
+          mountPath: /results/openai
+          readOnly: true
+        - name: multi-provider-results
+          mountPath: /results/multi-provider
+          readOnly: true
+      volumes:
+      - name: scripts
+        configMap:
+          name: mlflow-ingest-script
+          defaultMode: 0755
+      - name: openai-results
+        persistentVolumeClaim:
+          claimName: stage12-ab-results
+      - name: multi-provider-results
+        persistentVolumeClaim:
+          claimName: multi-provider-ab-results
