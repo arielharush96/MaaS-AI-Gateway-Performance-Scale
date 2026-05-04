@@ -1,6 +1,10 @@
 # ServiceAccount and RBAC for the GuideLLM benchmark pod.
-# Grants read access to cluster monitoring (Prometheus/Thanos) so the
-# prom_monitor.py sidecar can collect CPU, memory, and network metrics.
+#
+# Grants:
+#   1. cluster-monitoring-view — read Prometheus/Thanos metrics
+#   2. benchmark-pod-reader    — read BBR pod logs for error diagnostics
+#   3. benchmark-gateway-access — authorize requests through the MaaS gateway
+#      (Kuadrant AuthPolicy requires 'post' verb on llminferenceservices)
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -19,4 +23,50 @@ subjects:
 roleRef:
   kind: ClusterRole
   name: cluster-monitoring-view
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: benchmark-pod-reader
+  namespace: openshift-ingress
+rules:
+- apiGroups: [""]
+  resources: ["pods", "pods/log"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: benchmark-pod-reader
+  namespace: openshift-ingress
+subjects:
+- kind: ServiceAccount
+  name: benchmark-sa
+  namespace: openshift-ingress
+roleRef:
+  kind: Role
+  name: benchmark-pod-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: benchmark-gateway-access
+rules:
+- apiGroups: ["serving.kserve.io"]
+  resources: ["llminferenceservices"]
+  verbs: ["post", "get", "list", "watch", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: benchmark-gateway-access
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: openshift-ingress
+roleRef:
+  kind: ClusterRole
+  name: benchmark-gateway-access
   apiGroup: rbac.authorization.k8s.io

@@ -3,7 +3,7 @@ upstreamBbr:
     name: payload-processing
     replicas: 1
     image:
-      registry: quay.io/rh-ee
+      registry: quay.io/rh-ee-aharush
       repository: llm-d-inference-sim
       tag: pp-perf-test
       pullPolicy: Always
@@ -34,7 +34,7 @@ upstreamBbr:
     name: istio
     istio:
       envoyFilter:
-        operation: INSERT_AFTER
+        operation: INSERT_BEFORE
 
   inferenceGateway:
     name: maas-default-gateway

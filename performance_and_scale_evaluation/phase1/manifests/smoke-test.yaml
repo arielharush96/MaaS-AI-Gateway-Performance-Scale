@@ -1,0 +1,94 @@
+# Quick smoke test to verify the MaaS AI Gateway is working end-to-end.
+#
+# Tests direct simulator access + all 5 provider paths through the gateway.
+# Uses the /<model>/v1/chat/completions URL pattern with SA token auth.
+#
+# Prerequisites:
+#   - All infrastructure deployed (simulator, gateway, BBR, ExternalModels, HTTPRoutes)
+#   - guidellm-token secret exists (see README for creation)
+#   - smoke-test-script ConfigMap created from this file's embedded script
+#
+# Usage:
+#   TOKEN=$(oc create token default --audience=maas-default-gateway-sa -n openshift-ingress --duration=120m)
+#   oc delete secret guidellm-token -n openshift-ingress --ignore-not-found
+#   oc create secret generic guidellm-token --from-literal=token=$TOKEN -n openshift-ingress
+#   oc create configmap smoke-test-script --from-file=smoke-test.sh=<(cat <<'SCRIPT' ... SCRIPT) -n openshift-ingress
+#   oc apply -f smoke-test.yaml -n openshift-ingress
+#   oc logs smoke-test -n openshift-ingress
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: smoke-test-script
+  namespace: openshift-ingress
+data:
+  smoke-test.sh: |
+    #!/bin/sh
+    SIM="http://llm-d-inference-sim.openshift-ingress.svc.cluster.local:8000"
+    GW="http://maas-default-gateway-data-science-gateway-class.openshift-ingress.svc.cluster.local:80"
+    TOKEN=$(cat /var/run/secrets/guidellm/token)
+    AUTH="Authorization: Bearer $TOKEN"
+
+    PASS=0; FAIL=0
+
+    test_endpoint() {
+      local label="$1" url="$2" auth_header="$3" body="$4"
+      echo "=== $label ==="
+      if [ -n "$auth_header" ]; then
+        code=$(curl -s -o /tmp/resp.json -w "%{http_code}" -X POST "$url" \
+          -H "Content-Type: application/json" -H "$auth_header" -d "$body")
+      else
+        code=$(curl -s -o /tmp/resp.json -w "%{http_code}" -X POST "$url" \
+          -H "Content-Type: application/json" -d "$body")
+      fi
+      echo "HTTP $code"
+      if [ "$code" = "200" ]; then
+        PASS=$((PASS + 1))
+        cat /tmp/resp.json | head -c 200
+      else
+        FAIL=$((FAIL + 1))
+        cat /tmp/resp.json | head -c 300
+      fi
+      echo ""
+      echo ""
+    }
+
+    BODY='{"model":"MODEL","messages":[{"role":"user","content":"hi"}],"max_tokens":5,"stream":false}'
+
+    test_endpoint "Direct -> Simulator" \
+      "$SIM/v1/chat/completions" "" \
+      "$(echo $BODY | sed 's/MODEL/gpt-4o-openai/')"
+
+    for model in gpt-4o-openai claude-sonnet-anthropic gpt-4o-azure claude-sonnet-vertex gpt-4o-bedrock; do
+      test_endpoint "Gateway -> $model" \
+        "$GW/$model/v1/chat/completions" "$AUTH" \
+        "$(echo $BODY | sed "s/MODEL/$model/")"
+    done
+
+    echo "=== RESULTS: $PASS passed, $FAIL failed ==="
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: smoke-test
+  namespace: openshift-ingress
+spec:
+  restartPolicy: Never
+  containers:
+  - name: smoke-test
+    image: curlimages/curl:latest
+    command: ["sh", "/scripts/smoke-test.sh"]
+    volumeMounts:
+    - name: scripts
+      mountPath: /scripts
+    - name: token
+      mountPath: /var/run/secrets/guidellm
+      readOnly: true
+  volumes:
+  - name: scripts
+    configMap:
+      name: smoke-test-script
+      defaultMode: 0755
+  - name: token
+    secret:
+      secretName: guidellm-token

@@ -1,2 +1,12 @@
 # Binaries for programs and plugins
 bin/*
+
+# macOS
+.DS_Store
+
+# Benchmark results (large, generated data)
+performance_and_scale_evaluation/phase1/results/
+
+# IDE
+.vscode/
+.idea/

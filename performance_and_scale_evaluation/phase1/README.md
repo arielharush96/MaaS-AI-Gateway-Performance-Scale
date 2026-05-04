@@ -13,8 +13,8 @@ inference backend.
                         │               (direct, OpenAI format)           │
                         └─────────────────────────────────────────────────┘
 
-                        ┌────────────────────────────────────────────────----------------─┐
-  Gateway  (B):         │  GuideLLM ──► AI-Gatway(BBR+Envoy) ──► llm-d-inference- sim     │
+                        ┌─────────────────────────────────────────────────────────────────┐
+  Gateway  (B):         │  GuideLLM ──► AI-Gateway(BBR+Envoy) ──► llm-d-inference-sim     │
                         │               (body-based routing,                              │
                         │                API translation,                                 │
                         │                plugin chain)                                    │
@@ -31,43 +31,159 @@ overhead.
 
 ```
 phase1/
-├── run_benchmark.sh                          # Local orchestrator (runs from your laptop)
 ├── README.md
 │
 ├── manifests/
 │   ├── llm-d-inference-sim.yaml              # Simulator deployment + service
 │   ├── external-models.yaml                  # ExternalModel CRs (model→provider mapping)
-│   ├── httproutes.yaml                       # HTTPRoute per model (header-based routing)
-│   ├── GuideLLM-benchmark-job.yaml           # PVC + Job (GuideLLM load generator)
-│   ├── benchmark-sa.yaml                     # ServiceAccount + RBAC (Prometheus access)
-│   ├── secrets-dummy.yaml                    # Dummy API keys for simulator
+│   ├── httproutes.yaml                       # HTTPRoute per model (path + header routing)
+│   ├── secrets.yaml                          # Dummy API keys for simulator
+│   ├── benchmark-sa.yaml                     # ServiceAccount + RBAC (monitoring + gateway access)
+│   ├── smoke-test.yaml                       # Quick end-to-end validation pod
+│   ├── supplementary-benchmark-job.yaml      # Job for supplementary experiments
 │   └── infrastructure/                       # Platform-level prerequisites
 │       ├── rhcl-kuadrant.yaml                # RHCL/Kuadrant operator (OLM subscription)
 │       ├── postgres.yaml                     # PostgreSQL for MaaS DB
-│       └── payload-processing-values.yaml    # BBR Helm values (plugin chain config)
+│       └── payload-processing-values.yaml    # BBR Helm values (production image)
 │
 └── scripts/
     └── benchmark/                            # Scripts that run INSIDE the GuideLLM pod
-        ├── run.sh                            # Main benchmark orchestrator
-        ├── parse.py                          # GuideLLM JSON → CSV parser
+        ├── run.sh                            # Main A/B benchmark (all providers × sizes × concurrency)
+        ├── run_supplementary.sh              # Exp 1: per-plugin latency + Exp 2: multi-turn errors
+        ├── run_hpa.sh                        # Exp 3: HPA horizontal scaling test
+        ├── parse.py                          # GuideLLM JSON → CSV parser (with error extraction)
+        ├── parse_hpa.py                      # CSV parser for HPA tests (adds replica column)
         ├── plugin_delta.py                   # Per-plugin latency from Prometheus scrapes
         └── prom_monitor.py                   # Background CPU/memory/network collector
 ```
 
-## Prerequisites
+## Quick Start
 
-- OpenShift cluster with the MaaS AI Gateway stack installed:
-  1. RHCL/Kuadrant operator (`manifests/infrastructure/rhcl-kuadrant.yaml`)
-  2. PostgreSQL (`manifests/infrastructure/postgres.yaml`)
-  3. BBR payload-processing sidecar deployed via Helm
+### 1. Prerequisites
 
+- OpenShift cluster with RHOAI (Red Hat OpenShift AI) installed
+- `modelsAsService` component set to `Managed` in the DataScienceCluster
+- RHCL/Kuadrant operator installed (`manifests/infrastructure/rhcl-kuadrant.yaml`)
+- `oc` CLI logged in with cluster-admin
+
+### 2. Deploy Infrastructure
+
+```bash
+# Install payload-processing (BBR) via Helm
+helm upgrade --install payload-processing deploy/payload-processing \
+  -f performance_and_scale_evaluation/phase1/manifests/infrastructure/payload-processing-values.yaml \
+  -n openshift-ingress
+
+# Deploy the simulator
+oc apply -f performance_and_scale_evaluation/phase1/manifests/llm-d-inference-sim.yaml
+
+# Apply ExternalModel CRs and HTTPRoutes
+oc apply -f performance_and_scale_evaluation/phase1/manifests/external-models.yaml
+oc apply -f performance_and_scale_evaluation/phase1/manifests/httproutes.yaml
+
+# Apply dummy API key secrets
+oc apply -f performance_and_scale_evaluation/phase1/manifests/secrets.yaml
+
+# Create benchmark ServiceAccount and RBAC
+oc apply -f performance_and_scale_evaluation/phase1/manifests/benchmark-sa.yaml
+```
+
+### 3. Create Authentication Token
+
+The MaaS gateway uses Kuadrant AuthPolicy with Kubernetes TokenReview.
+A ServiceAccount token with the correct audience is required:
+
+```bash
+# Create a 2-hour SA token for gateway authentication
+TOKEN=$(oc create token default \
+  --audience=maas-default-gateway-sa \
+  -n openshift-ingress \
+  --duration=120m)
+
+# Store it as a secret (GuideLLM reads it as OPENAI_API_KEY)
+oc delete secret guidellm-token -n openshift-ingress --ignore-not-found
+oc create secret generic guidellm-token \
+  --from-literal=token=$TOKEN \
+  -n openshift-ingress
+```
+
+> **Important**: The token expires after 2 hours. For long-running benchmarks,
+> increase `--duration` or recreate the token before each run.
+
+### 4. Validate with Smoke Test
+
+```bash
+oc apply -f performance_and_scale_evaluation/phase1/manifests/smoke-test.yaml
+oc logs smoke-test -n openshift-ingress -f
+
+# Expected: all 6 endpoints return HTTP 200
+# Clean up:
+oc delete pod smoke-test -n openshift-ingress
+```
+
+### 5. Run Benchmarks
+
+Create the benchmark scripts ConfigMap and launch the job:
+
+```bash
+# Create ConfigMap from benchmark scripts
+oc create configmap multi-provider-ab-script \
+  --from-file=run.sh=performance_and_scale_evaluation/phase1/scripts/benchmark/run.sh \
+  --from-file=parse.py=performance_and_scale_evaluation/phase1/scripts/benchmark/parse.py \
+  --from-file=plugin_delta.py=performance_and_scale_evaluation/phase1/scripts/benchmark/plugin_delta.py \
+  --from-file=prom_monitor.py=performance_and_scale_evaluation/phase1/scripts/benchmark/prom_monitor.py \
+  -n openshift-ingress
+
+# Launch the A/B benchmark job (creates PVC + Job)
+# Edit the job YAML to select which script to run
+oc apply -f performance_and_scale_evaluation/phase1/manifests/supplementary-benchmark-job.yaml
+```
+
+## Gateway URL Pattern
+
+The gateway expects requests in the format:
+
+```
+http://<gateway-svc>/<model-name>/v1/chat/completions
+```
+
+For example:
+- `http://gateway:80/gpt-4o-openai/v1/chat/completions`
+- `http://gateway:80/claude-sonnet-anthropic/v1/chat/completions`
+
+The HTTPRoutes match by path prefix (`/<model>/`) and rewrite the path to `/`
+before forwarding to the simulator. A second rule matches by the
+`X-Gateway-Model-Name` header (set by the BBR `body-field-to-header` plugin).
+
+## Kuadrant Authentication
+
+The MaaS gateway enforces authentication via a Kuadrant AuthPolicy:
+
+1. **Authentication**: `kubernetesTokenReview` with audience `maas-default-gateway-sa`
+2. **Authorization**: `kubernetesSubjectAccessReview` checking `post` verb on
+   `llminferenceservices` (group `serving.kserve.io`)
+
+The `benchmark-gateway-access` ClusterRole (in `benchmark-sa.yaml`) grants the
+`default` ServiceAccount the required `post` permission.
+
+### Troubleshooting Auth
+
+If you get **401**: Token is invalid or expired. Recreate with `oc create token`.
+
+If you get **403**: Check that:
+- AuthConfigs in `kuadrant-system` are READY (`oc get authconfig -n kuadrant-system`)
+- The `benchmark-gateway-access` ClusterRoleBinding exists
+- If AuthConfigs are stale, delete them: `oc delete authconfig -n kuadrant-system -l kuadrant.io/managed=true`
+  (the Kuadrant operator will recreate them)
 
 ## Simulator
 
 `llm-d-inference-sim` is a multi-provider LLM simulator that responds to
-OpenAI, Anthropic, Azure, Bedrock, and Vertex AI API formats. this version ( https://github.com/arielharush96/llm-d-inference-sim/tree/feat/multi-provider-support ) is a fork which allows the simulator to handle requests (from the ai gateway) for all 5 different providors.
+OpenAI, Anthropic, Azure, Bedrock, and Vertex AI API formats. This version
+([feat/multi-provider-support](https://github.com/arielharush96/llm-d-inference-sim/tree/feat/multi-provider-support))
+is a fork that allows the simulator to handle requests for all 5 providers.
 
-Modified simulator key flags:
+Key flags:
 - `--deterministic-tokens` — every response returns exactly `max_tokens`
   output tokens, ensuring consistent A/B latency comparisons
 - `--time-to-first-token 1` / `--inter-token-latency 1` — 1ms simulated
@@ -106,12 +222,14 @@ The payload-processing (BBR) sidecar runs these plugins in order:
 `1, 10, 50` conversation turns
 
 ### Provider coverage
-- `claude-sonnet-anthropic` (Anthropic Messages API)
-- `claude-sonnet-vertex` (Vertex AI GenerateContent API)
-- `gpt-4o-openai` (OpenAI)
-- `gpt-4o-azure` (Azure OpenAI)
-- `gpt-4o-bedrock` (Bedrock OpenAI)
-  
+
+| Provider | Model Name | API Format | Translator |
+|----------|-----------|------------|------------|
+| OpenAI | `gpt-4o-openai` | OpenAI Chat Completions | nil (passthrough) |
+| Azure | `gpt-4o-azure` | Azure OpenAI | nil |
+| Bedrock | `gpt-4o-bedrock` | Bedrock OpenAI | nil |
+| Anthropic | `claude-sonnet-anthropic` | Anthropic Messages API | full |
+| Vertex AI | `claude-sonnet-vertex` | Vertex AI GenerateContent | full |
 
 ## Monitoring
 
@@ -119,5 +237,5 @@ The benchmark pod runs a background Prometheus monitor that collects every 5 sec
 - **CPU** usage per pod (payload-processing, gateway, simulator)
 - **Memory** working set per pod
 - **Network** receive/transmit bytes per pod
-- **PerPlugin Latency** Per-plugin latency is scraped from the BBR `/metrics` endpoint before and
-after each gateway benchmark run.
+- **Per-plugin latency** scraped from the BBR `/metrics` endpoint before and
+  after each gateway benchmark run
