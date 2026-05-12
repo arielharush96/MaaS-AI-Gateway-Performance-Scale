@@ -1,9 +1,6 @@
 # ExternalModel CRs for performance evaluation.
-# Each CR maps a model name to a provider API format. All models route to
-# the in-cluster llm-d-inference-sim; the "endpoint" field is metadata only
-# (routing is handled by HTTPRoutes).
+# Each CR maps a model name to a provider API format.
 #
-# Nil-translator models (body passes through, only path changes):
 ---
 apiVersion: maas.opendatahub.io/v1alpha1
 kind: ExternalModel
