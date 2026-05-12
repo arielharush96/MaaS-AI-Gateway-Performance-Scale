@@ -21,6 +21,17 @@ QUERIES = {
     "net_tx": f'sum(rate(container_network_transmit_bytes_total{{namespace="{NAMESPACE}",pod=~"{POD_REGEX}"}}[30s])) by (pod)',
 }
 
+LATENCY_QUERIES = {
+    "istio_request_duration_p50": f'histogram_quantile(0.50, sum(rate(istio_request_duration_milliseconds_bucket{{namespace="{NAMESPACE}",destination_workload=~"payload-processing|maas-default-gateway.*"}}[60s])) by (le, destination_workload, source_workload))',
+    "istio_request_duration_p95": f'histogram_quantile(0.95, sum(rate(istio_request_duration_milliseconds_bucket{{namespace="{NAMESPACE}",destination_workload=~"payload-processing|maas-default-gateway.*"}}[60s])) by (le, destination_workload, source_workload))',
+    "istio_request_duration_p99": f'histogram_quantile(0.99, sum(rate(istio_request_duration_milliseconds_bucket{{namespace="{NAMESPACE}",destination_workload=~"payload-processing|maas-default-gateway.*"}}[60s])) by (le, destination_workload, source_workload))',
+    "istio_request_rate": f'sum(rate(istio_requests_total{{namespace="{NAMESPACE}",destination_workload=~"payload-processing|maas-default-gateway.*"}}[60s])) by (destination_workload, source_workload, response_code)',
+    "envoy_upstream_rq_time_p95": f'histogram_quantile(0.95, sum(rate(envoy_cluster_upstream_rq_time_bucket{{namespace="{NAMESPACE}"}}[60s])) by (le, envoy_cluster_name))',
+    "envoy_downstream_rq_time_p95": f'histogram_quantile(0.95, sum(rate(envoy_http_downstream_rq_time_bucket{{namespace="{NAMESPACE}"}}[60s])) by (le, envoy_http_conn_manager_prefix))',
+    "authorino_auth_duration_p95": 'histogram_quantile(0.95, sum(rate(auth_server_authconfig_duration_seconds_bucket[60s])) by (le, namespace, authconfig))',
+    "authorino_evaluator_duration_p95": 'histogram_quantile(0.95, sum(rate(auth_server_evaluator_duration_seconds_bucket[60s])) by (le, namespace, authconfig, evaluator))',
+}
+
 shutdown = False
 def handle_signal(signum, frame):
     global shutdown
@@ -42,6 +53,14 @@ for metric_name in QUERIES:
     f.write("timestamp,pod,value\n")
     f.flush()
     csv_files[metric_name] = f
+
+latency_csv_files = {}
+for metric_name in LATENCY_QUERIES:
+    path = os.path.join(RESULTS_DIR, f"{metric_name}.csv")
+    f = open(path, "w")
+    f.write("timestamp,labels,value\n")
+    f.flush()
+    latency_csv_files[metric_name] = f
 
 benchmark_label_path = "/results/.current_benchmark"
 bench_csv = open(os.path.join(RESULTS_DIR, "benchmark_markers.csv"), "w")
@@ -88,6 +107,24 @@ while not shutdown and not os.path.exists(STOP_FILE):
                 print(f"[prom_monitor] WARN: {metric_name} query failed: {e}")
                 sys.stdout.flush()
 
+    for metric_name, query in LATENCY_QUERIES.items():
+        try:
+            url = PROM_URL + "?" + urllib.parse.urlencode({"query": query})
+            req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+            resp = urllib.request.urlopen(req, context=ctx, timeout=10)
+            data = json.loads(resp.read())
+            if data.get("status") == "success":
+                for result in data["data"]["result"]:
+                    metric = result["metric"]
+                    label_str = "|".join(f"{k}={v}" for k, v in sorted(metric.items()) if k != "__name__")
+                    val = result["value"][1]
+                    latency_csv_files[metric_name].write(f"{ts},{label_str},{val}\n")
+                latency_csv_files[metric_name].flush()
+        except Exception as e:
+            if cycle == 0:
+                print(f"[prom_monitor] WARN: {metric_name} query failed: {e}")
+                sys.stdout.flush()
+
     cycle += 1
     if cycle % 60 == 0:
         print(f"[prom_monitor] {cycle} samples collected ({cycle * INTERVAL}s elapsed)")
@@ -99,6 +136,8 @@ while not shutdown and not os.path.exists(STOP_FILE):
         time.sleep(0.1)
 
 for f in csv_files.values():
+    f.close()
+for f in latency_csv_files.values():
     f.close()
 bench_csv.close()
 print(f"[prom_monitor] Stopped after {cycle} samples.")
