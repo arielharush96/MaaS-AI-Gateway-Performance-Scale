@@ -1,23 +1,4 @@
-# Experiment 1: Per-Plugin Latency
-#
-# Small payload (32/64), all 10 concurrency levels, all 5 providers.
-# Estimated runtime: ~2.5 hours
-#
-# Prerequisites:
-#   - ConfigMap "exp1-benchmark-script" created from all scripts
-#   - BBR deployed with --metrics-endpoint-auth=false, Service exposing port 9090
-#   - llm-d-inference-sim deployed with --deterministic-tokens
-#   - ExternalModel CRs + HTTPRoutes applied
-#   - Secret "guidellm-token" with valid SA token
-#   - ServiceAccount "benchmark-sa"
-#
-# Create ConfigMap:
-#   oc create configmap exp1-benchmark-script \
-#     --from-file=run_exp1_plugin_latency.sh=scripts/benchmark/run_exp1_plugin_latency.sh \
-#     --from-file=parse.py=scripts/benchmark/parse.py \
-#     --from-file=prom_monitor.py=scripts/benchmark/prom_monitor.py \
-#     --from-file=plugin_delta.py=scripts/benchmark/plugin_delta.py \
-#     -n openshift-ingress
+
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
