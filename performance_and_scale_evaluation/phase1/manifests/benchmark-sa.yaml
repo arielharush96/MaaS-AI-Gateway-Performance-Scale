@@ -1,10 +1,4 @@
-# ServiceAccount and RBAC for the GuideLLM benchmark pod.
-#
-# Grants:
-#   1. cluster-monitoring-view — read Prometheus/Thanos metrics
-#   2. benchmark-pod-reader    — read BBR pod logs for error diagnostics
-#   3. benchmark-gateway-access — authorize requests through the MaaS gateway
-#      (Kuadrant AuthPolicy requires 'post' verb on llminferenceservices)
+
 ---
 apiVersion: v1
 kind: ServiceAccount
