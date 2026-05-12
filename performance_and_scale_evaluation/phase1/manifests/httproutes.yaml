@@ -2,11 +2,7 @@
 # All models share the same backend (llm-d-inference-sim); the BBR plugin
 # chain handles per-provider API translation.
 #
-# Each route has two match rules:
-#   Rule 1: path prefix /<model-name>/ with URL rewrite (legacy/manual testing)
-#   Rule 2: header X-Gateway-Model-Name == <model-name> (used by A/B benchmarks)
 #
-# Nil-translator models:
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
