@@ -1,18 +1,3 @@
-#!/bin/bash
-#
-# Experiment 1: Full-Stack Latency Breakdown
-#
-# Small payload (32/64), all 10 concurrency levels, all 5 providers.
-# Measures latency at every layer:
-#   - BBR plugin duration (bbr_plugin_duration_seconds) via direct scrape
-#   - Istio request duration (istio_request_duration_milliseconds) via Thanos
-#   - Envoy upstream/downstream timing (envoy_*_rq_time) via Thanos
-#   - Authorino auth duration (auth_server_*_duration_seconds) via Thanos
-#   - Container CPU/memory/network via Thanos
-#
-# Timing: 30s warmup + 60s measurement = 90s per benchmark
-# Matrix:  5 providers × 10 levels = 50 A/B pairs = 100 benchmarks
-# Estimated runtime: ~2.5 hours
 
 SIMULATOR="http://llm-d-inference-sim.openshift-ingress.svc.cluster.local:8000"
 GATEWAY="http://maas-default-gateway-data-science-gateway-class.openshift-ingress.svc.cluster.local:80"
